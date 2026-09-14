@@ -20,26 +20,17 @@
 
 #![no_std]
 #![no_main]
-use core::
 use core::{net::Ipv4Addr, str};
 
 use embassy_executor::Spawner;
 use embassy_futures::select::Either;
 use embassy_net::{
-    IpListenEndpoint,
-    Ipv4Cidr,
-    Runner,
-    StackResources,
-    StaticConfigV4,
-    dns::DnsSocket,
-    tcp::{
+    
+    IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Cidr, Runner, StackResources, StaticConfigV4, dns::DnsSocket, tcp::{
         TcpSocket,
         client::{TcpClient, TcpClientState},
-    },
-    udp::{
-        UdpSocket,
-        UdpMetadata,
-        PacketMetadata,
+    }, udp::{
+        self, PacketMetadata, UdpMetadata, UdpSocket,
     }
 };
 use embassy_time::{Duration, Timer};
@@ -47,11 +38,8 @@ use embedded_io_async::Read;
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{
-    clock::CpuClock,
-    interrupt::software::SoftwareInterruptControl,
-    ram,
-    rng::Rng,
-    timer::timg::TimerGroup,
+    
+    aes::Aes, clock::CpuClock, interrupt::software::SoftwareInterruptControl, ram, rng::Rng, timer::timg::TimerGroup,
 };
 use defmt::{Str, error, info, warn};
 use defmt_rtt as _;
@@ -62,11 +50,9 @@ use esp_radio::wifi::{
     WifiController,
     ap::AccessPointConfig,
     sta::StationConfig,
+    
 };
-use reqwless::{
-    client::HttpClient,
-    request::{Method, RequestBuilder},
-};
+
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const SSID: &str = "ll_2G";
@@ -141,27 +127,18 @@ async fn main(spawner: Spawner) -> ! {
     };
 
 
-    info!("Connect to the ap `{}` and point your browser to http://{}:8080/",SSID,sta_address);
+    info!("Connect to the ap `{}` and local ip address is {}:8080/",SSID,sta_address);
 
-    // Init HTTP client
-    let tcp_client = TcpClient::new(
-        sta_stack,
-        mk_static!(
-            TcpClientState<1, 1500, 1500>,
-            TcpClientState::<1, 1500, 1500>::new()
-        ),
-    );
-
-    let mut sta_server_rx_buffer = [0; 1536];
-    let mut sta_server_tx_buffer = [0; 1536];
+    // let mut sta_server_rx_buffer = [0; 1536];
+    // let mut sta_server_tx_buffer = [0; 1536];
 
 
-    let mut tcp_socket = TcpSocket::new(
-        sta_stack,
-        &mut sta_server_rx_buffer,
-        &mut sta_server_tx_buffer,
-    );
-    tcp_socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+    // let mut tcp_socket = TcpSocket::new(
+    //     sta_stack,
+    //     &mut sta_server_rx_buffer,
+    //     &mut sta_server_tx_buffer,
+    // );
+    // tcp_socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
     
 
     let mut rx_meta = [PacketMetadata::EMPTY; 16];
@@ -170,100 +147,87 @@ async fn main(spawner: Spawner) -> ! {
     let mut tx_buffer = [0u8; 1536];
 
     let mut udp_socket = UdpSocket::new(sta_stack, &mut rx_meta,&mut rx_buffer,&mut tx_meta,&mut tx_buffer);
-    
     udp_socket.bind(IpListenEndpoint {
         addr: None,
-        port: 8080,
+        port: 50000,
     });
-    
     let dns_client = DnsSocket::new(sta_stack);
-    let mut sta_server_socket = tcp_socket;
+    
     let mut buffer = [0u8; 1024];
+    let xs = "Xsend".as_bytes();
+    let umd = IpEndpoint::new(IpAddress::v4(224, 0, 0, 223), 50000);
+    // let umd = IpEndpoint::new(IpAddress::v4(192, 168, 3, 2), 53317);
     loop {
-        if let Ok((len,data)) =  udp_socket.recv_from(&mut buffer).await && len <= 1024{
-            let str = str::from_utf8(&buffer[..len]).unwrap();
-            info!("{} {}",len,str);
+
+        if  udp_socket.send_to(&xs,umd ).await.is_ok(){
+            info!("发送成功");
         }
+        Timer::after_secs(1).await;
+        // if let Ok((len,data)) =  udp_socket.recv_from(&mut buffer).await && len <= 1024{
+        //     let str = str::from_utf8(&buffer[..len]).unwrap();
+        //     info!("{} {}",len,str);
+        // }
     }
-    /*
-    loop {
-        info!("Wait for connection...");
-        // FIXME: If connections are attempted on both sockets at the same time, we
-        // might end up dropping one of them. Might be better to spawn both
-        // accept() calls, or use fused futures? Note that we only attempt to
-        // serve one connection at a time, so we don't run out of ram.
+    // return ;
+    // let mut  aes = Aes::new(peripherals.AES);
+        // let mut sta_server_socket = udp_socket;
+    // loop {
+    //     info!("Wait for connection...");
+    //     // FIXME: If connections are attempted on both sockets at the same time, we
+    //     // might end up dropping one of them. Might be better to spawn both
+    //     // accept() calls, or use fused futures? Note that we only attempt to
+    //     // serve one connection at a time, so we don't run out of ram.
 
-        if let Err(_) = sta_server_socket.accept(IpListenEndpoint {
-            addr: None,
-            port: 8080,
-        }).await{
-            continue;
-        }
+    //     if let Err(e) = sta_server_socket.accept(IpListenEndpoint {
+    //         addr: None,
+    //         port: 8080,
+    //     }).await{
+    //         info!("connect error: {:?}", e);
+    //         continue;
+    //     }
 
-        info!("Connected...");
+    //     info!("Connected...");
 
 
-        use embedded_io_async::Write;
+    //     use embedded_io_async::Write;
 
-        let mut buffer = [0u8; 1024];
-        let mut pos = 0;
-        loop {
-            match sta_server_socket.read(&mut buffer).await {
-                Ok(0) => {
-                    info!("AP read EOF");
-                    break;
-                }
-                Ok(len) => {
-                    let to_print =
-                        unsafe { core::str::from_utf8_unchecked(&buffer[..(pos + len)]) };
-
-                    if to_print.contains("\r\n\r\n") {
-
-                        info!("{}", to_print);
-                        break;
-                    }
-
-                    pos += len;
-                }
-                Err(e) => {
-                    info!("AP read error: {:?}", e);
-                    break;
-                }
-            };
-        }
-        if sta_stack.is_link_up() {
-            let x = udp_socket.bind(IpListenEndpoint {
-                addr: None,
-                port: 8080,
-            }).unwrap()
-        } else {
-            let r = sta_server_socket
-                .write_all(
-                    b"HTTP/1.0 200 OK\r\n\r\n\
-                    <html>\
-                        <body>\
-                            <h1>Hello Rust! Hello esp-radio! Station is not connected.</h1>\
-                        </body>\
-                    </html>\r\n\
-                    ",
-                )
-                .await;
-            if let Err(e) = r {
-                info!("AP write error: {:?}", e);
-            }
-        }
-        let r = sta_server_socket.flush().await;
-        if let Err(e) = r {
-            info!("AP flush error: {:?}", e);
-        }
-        Timer::after(Duration::from_millis(1000)).await;
-        sta_server_socket.close();
-        Timer::after(Duration::from_millis(1000)).await;
-        sta_server_socket.abort();
-    }
-    */
+ 
+        
+        
+    //     if sta_stack.is_link_up() {
+    //         let key = [255u8;32];
+    //         let mut buffer = [0u8;16];
+    //         let alpha = "xwertyuiopasdfjk".as_bytes();
+            
+    //         sta_server_socket.write_all(&key).await;
+    //         let _ = sta_server_socket.flush().await.unwrap();
+    //         for i in alpha.iter(){
+    //             buffer.clone_from_slice(alpha);
+    //             buffer[0] = *i;
+    //             aes.encrypt(&mut buffer, key);
+            
+    //             sta_server_socket.write_all(&buffer).await;
+    //             let _ = sta_server_socket.flush().await.unwrap();
+    //             Timer::after(Duration::from_millis(1000)).await;
+    //         }
+    //         buffer.clone_from_slice(alpha);
+    //         buffer[0] = 255;
+    //         aes.encrypt(&mut buffer, key);
+        
+    //         sta_server_socket.write_all(&buffer).await;
+    //         let _ = sta_server_socket.flush().await.unwrap();
+    //         Timer::after(Duration::from_millis(1000)).await;
+    //     }
+        
+    //     sta_server_socket.close();
+    //     Timer::after(Duration::from_millis(1000)).await;
+    //     sta_server_socket.abort();
+    // }
+    
 }
+fn upd(udp_socket:UdpSocket){
 
+}
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
     info!("start connection task");
